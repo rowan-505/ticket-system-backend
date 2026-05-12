@@ -1,4 +1,4 @@
-import { OptimisticLockVersionMismatchError } from "typeorm";
+import { OptimisticLockVersionMismatchError, QueryFailedError } from "typeorm";
 
 import AppDataSource from "../data-source";
 import { Concert } from "../entities/concert.entity";
@@ -12,52 +12,94 @@ import { Reservation, ReservationStatus } from "../entities/reservation.entity";
 import type { PurchaseBody, ReserveBody } from "../validation/schemas";
 
 /**
- * Atomically decrements concert stock (single UPDATE), then creates a PENDING reservation.
- * If no row is updated, stock was insufficient or the concert id is invalid (ConflictError).
+ * SQLite driver shares one QueryRunner for the whole process. Concurrent reservation
+ * transactions must be serialized so we never issue nested BEGIN on the same connection.
  */
-export async function createReservation(input: ReserveBody): Promise<Reservation> {
+let reservationWriteTail: Promise<void> = Promise.resolve();
+
+function enqueueReservationWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = reservationWriteTail.then(() => fn());
+  reservationWriteTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function isSqliteConcurrencyMessage(text: string): boolean {
+  return (
+    text.includes("SQLITE_BUSY") ||
+    text.includes("SQLITE_LOCKED") ||
+    text.includes("cannot start a transaction within a transaction")
+  );
+}
+
+function mapSqliteReservationFailure(err: unknown): unknown {
+  if (err instanceof AppError) {
+    return err;
+  }
+
+  const fromDriver = (e: unknown): string | undefined => {
+    if (e && typeof e === "object" && "message" in e && typeof (e as Error).message === "string") {
+      return (e as Error).message;
+    }
+    return undefined;
+  };
+
+  if (err instanceof QueryFailedError) {
+    const m = fromDriver(err.driverError) ?? err.message;
+    if (m && isSqliteConcurrencyMessage(m)) {
+      return new ConflictError(
+        "Reservation could not complete due to database contention. Try again.",
+        "CONCURRENCY_CONFLICT",
+      );
+    }
+  }
+
+  const msg = err instanceof Error ? err.message : String(err);
+  if (isSqliteConcurrencyMessage(msg)) {
+    return new ConflictError(
+      "Reservation could not complete due to database contention. Try again.",
+      "CONCURRENCY_CONFLICT",
+    );
+  }
+
+  return err;
+}
+
+/**
+ * Atomically decrements concert stock (single UPDATE), then creates a PENDING reservation.
+ * If no row is updated, stock was insufficient or the concert id is invalid (OUT_OF_STOCK).
+ */
+async function createReservationInTransaction(
+  input: ReserveBody,
+): Promise<Reservation> {
   const queryRunner = AppDataSource.createQueryRunner();
   await queryRunner.connect();
   await queryRunner.startTransaction();
 
   try {
-    const concertRepo = queryRunner.manager.getRepository(Concert);
     const reservationRepo = queryRunner.manager.getRepository(Reservation);
 
-    const updateResult = await queryRunner.manager
-      .createQueryBuilder()
-      .update(Concert)
-      .set({
-        availableStock: () => '"availableStock" - :quantity',
-        version: () => '"version" + 1',
-      })
-      .where("id = :concertId")
-      .andWhere("availableStock >= :quantity")
-      .setParameters({
-        concertId: input.concertId,
-        quantity: input.quantity,
-      })
-      .execute();
+    const updateResult = await queryRunner.query(
+      `UPDATE "concerts" SET "availableStock" = "availableStock" - ?, "version" = "version" + 1 WHERE "id" = ? AND "availableStock" >= ?`,
+      [input.quantity, input.concertId, input.quantity],
+      true,
+    );
 
     const affected = updateResult.affected ?? 0;
     if (affected === 0) {
       throw new ConflictError(
         "Not enough tickets available for this concert (stock unchanged).",
+        "OUT_OF_STOCK",
       );
-    }
-
-    const concert = await concertRepo.findOne({
-      where: { id: input.concertId },
-    });
-    if (!concert) {
-      throw new NotFoundError("Concert not found.");
     }
 
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + 5);
 
     const reservation = reservationRepo.create({
-      concert,
+      concert: { id: input.concertId } as Concert,
       userId: input.userId,
       quantity: input.quantity,
       status: ReservationStatus.PENDING,
@@ -69,10 +111,14 @@ export async function createReservation(input: ReserveBody): Promise<Reservation
     return reservation;
   } catch (err) {
     await queryRunner.rollbackTransaction();
-    throw err;
+    throw mapSqliteReservationFailure(err);
   } finally {
     await queryRunner.release();
   }
+}
+
+export function createReservation(input: ReserveBody): Promise<Reservation> {
+  return enqueueReservationWrite(() => createReservationInTransaction(input));
 }
 
 /**

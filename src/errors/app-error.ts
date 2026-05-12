@@ -19,8 +19,9 @@ export class NotFoundError extends AppError {
 export class ConflictError extends AppError {
   constructor(
     message = "This action conflicts with the current state of the resource.",
+    code: string = "CONFLICT",
   ) {
-    super("CONFLICT", message, 409);
+    super(code, message, 409);
     this.name = "ConflictError";
   }
 }
