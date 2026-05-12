@@ -1,0 +1,36 @@
+# Deploys the app on your EC2 instance when `main` is pushed.
+#
+# Prerequisites on EC2:
+# - Docker and Docker Compose plugin installed
+# - This repo cloned once (default path below: ~/ticket-management-backend)
+# - Git remote accessible from the instance (same branch: main)
+#
+# GitHub → Settings → Secrets and variables → Actions:
+#   EC2_HOST     — public IP or DNS (e.g. ec2-… compute.amazonaws.com)
+#   EC2_USER     — SSH login (often `ubuntu` for Ubuntu AMIs)
+#   EC2_SSH_KEY  — full contents of the *private* key (PEM), including
+#                  -----BEGIN … KEY----- / -----END … KEY----- lines
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH — git pull & Docker Compose
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            # Match the directory where you cloned this repo on the server.
+            cd ~/ticket-management-backend
+            git pull
+            docker compose up -d --build

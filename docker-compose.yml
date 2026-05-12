@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      DB_PATH: /data/database.sqlite
+    volumes:
+      - sqlite_data:/data
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+volumes:
+  sqlite_data:
+  redis_data:
