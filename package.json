@@ -8,8 +8,10 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/data-source.ts",
-    "migration:run": "typeorm-ts-node-commonjs migration:run -d src/data-source.ts",
-    "seed": "ts-node src/seed.ts"
+    "migration:run:dev": "typeorm-ts-node-commonjs migration:run -d src/data-source.ts",
+    "migration:run": "typeorm migration:run -d dist/data-source.js",
+    "seed:dev": "ts-node src/seed.ts",
+    "seed": "node dist/seed.js"
   },
   "keywords": [],
   "author": "",
