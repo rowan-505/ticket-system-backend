@@ -28,7 +28,14 @@ export async function createApp(): Promise<express.Express> {
   app.use(cleanupRouter);
 
   const swaggerSpec = getSwaggerSpec();
-  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+  const swaggerUiMiddleware = swaggerUi.setup(swaggerSpec);
+
+  app.get("/openapi.json", (_req, res) => {
+    res.status(200).type("application/json").send(swaggerSpec);
+  });
+
+  app.use("/api-docs", swaggerUi.serve, swaggerUiMiddleware);
+  app.use("/docs", swaggerUi.serve, swaggerUiMiddleware);
 
   if (process.env.SENTRY_DSN) {
     Sentry.setupExpressErrorHandler(app, {
