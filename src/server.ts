@@ -15,27 +15,30 @@ const port = Number(process.env.PORT) || 3000;
 
 let shuttingDown = false;
 
-function scheduleDestroyAndExit(httpExitCode: number): void {
-  logger.info(
-    "shutdown: waiting 5 seconds before database teardown for pending work",
-  );
-  setTimeout(async () => {
-    let exitCode = httpExitCode;
-    try {
-      if (AppDataSource.isInitialized) {
-        await AppDataSource.destroy();
-        logger.info("shutdown: TypeORM data source destroyed");
-      }
-    } catch (err) {
-      logger.error({ err }, "shutdown: failed to destroy data source");
-      exitCode = 1;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function teardownAfterHttpClosed(httpCloseFailed: boolean): Promise<void> {
+  logger.info("waiting 5 seconds for pending requests/database work");
+  await sleep(5000);
+
+  logger.info("closing database connection");
+  try {
+    if (AppDataSource.isInitialized) {
+      await AppDataSource.destroy();
     }
     if (isSentryEnabled()) {
       await Sentry.flush(2_000);
     }
-    logger.info({ exitCode }, "shutdown: process exit");
-    process.exit(exitCode);
-  }, 5000);
+    logger.info("shutdown complete");
+    process.exit(httpCloseFailed ? 1 : 0);
+  } catch (err) {
+    logger.error({ err }, "shutdown failed");
+    process.exit(1);
+  }
 }
 
 function gracefulShutdown(server: http.Server, signal: NodeJS.Signals): void {
@@ -44,18 +47,14 @@ function gracefulShutdown(server: http.Server, signal: NodeJS.Signals): void {
   }
   shuttingDown = true;
 
-  logger.info(
-    { signal },
-    "shutdown: signal received, closing HTTP server (no new connections)",
-  );
+  logger.info({ signal }, "shutdown signal received");
+  logger.info("closing HTTP server");
 
   server.close((closeErr) => {
     if (closeErr) {
-      logger.error({ err: closeErr }, "shutdown: error closing HTTP server");
-    } else {
-      logger.info("shutdown: HTTP server closed");
+      logger.error({ err: closeErr }, "error while closing HTTP server");
     }
-    scheduleDestroyAndExit(closeErr ? 1 : 0);
+    void teardownAfterHttpClosed(Boolean(closeErr));
   });
 }
 
