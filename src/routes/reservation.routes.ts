@@ -14,6 +14,19 @@ import {
   runTestReservationRollback,
 } from "../services/reservation.service";
 
+/** Shared HTTP handler for standard reserve flow (uses `createReservation`). */
+const handleStandardReserve: RequestHandler = async (req, res) => {
+  const reservation = await createReservation(req.body);
+  res.status(201).json({
+    id: reservation.id,
+    concertId: reservation.concert.id,
+    userId: reservation.userId,
+    quantity: reservation.quantity,
+    status: reservation.status,
+    expiresAt: reservation.expiresAt,
+  });
+};
+
 export function createReservationRouter(
   reserveRateLimiter: RequestHandler,
 ): Router {
@@ -59,17 +72,14 @@ export function createReservationRouter(
     "/reserve",
     reserveRateLimiter,
     validateBody(reserveBodySchema),
-    async (req, res) => {
-      const reservation = await createReservation(req.body);
-      res.status(201).json({
-        id: reservation.id,
-        concertId: reservation.concert.id,
-        userId: reservation.userId,
-        quantity: reservation.quantity,
-        status: reservation.status,
-        expiresAt: reservation.expiresAt,
-      });
-    },
+    handleStandardReserve,
+  );
+
+  // Assignment-only endpoint for concurrency stress testing. Not intended for production.
+  reservationRouter.post(
+    "/reserve/stress-test",
+    validateBody(reserveBodySchema),
+    handleStandardReserve,
   );
 
   reservationRouter.post(
